@@ -10,3 +10,4 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 # Feature flags
 INTELLIGENT_RETRY_ENABLED = _env_bool("INTELLIGENT_RETRY_ENABLED", False)
+MULTIPLE_ENVIRONMENTS = _env_bool("MULTIPLE_ENVIRONMENTS", False)
