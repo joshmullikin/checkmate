@@ -10,6 +10,10 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/executor", tags=["executor"])
 
 EXECUTOR_URL = os.getenv("PLAYWRIGHT_EXECUTOR_URL", "http://localhost:8932")
@@ -17,6 +21,35 @@ EXECUTOR_URL = os.getenv("PLAYWRIGHT_EXECUTOR_URL", "http://localhost:8932")
 
 class ExecutorConfigUpdate(BaseModel):
     preload: bool
+
+
+class CapabilitiesResponse(BaseModel):
+    recording_available: bool
+    headed_browsers: list[str]
+
+
+@router.get("/capabilities", response_model=CapabilitiesResponse)
+async def get_executor_capabilities():
+    """Check executor capabilities (e.g. whether recording is possible).
+
+    Recording requires a headed (non-headless) browser. In headless-only
+    environments (e.g. Kubernetes), recording is not available.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{EXECUTOR_URL}/browsers", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+            headed = [
+                b["id"] for b in data.get("browsers", []) if not b.get("headless", True)
+            ]
+            return CapabilitiesResponse(
+                recording_available=len(headed) > 0,
+                headed_browsers=headed,
+            )
+    except httpx.RequestError as exc:
+        logger.warning(f"Executor unreachable when checking capabilities: {exc}")
+        return CapabilitiesResponse(recording_available=False, headed_browsers=[])
 
 
 @router.get("/config")

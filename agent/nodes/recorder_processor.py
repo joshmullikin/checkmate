@@ -62,6 +62,26 @@ class RecorderEventProcessor:
             return path if path else "/"
         return url
 
+    def _make_wait_for_page(self) -> ProcessedStep:
+        """Create a wait_for_page step to ensure the page is fully loaded."""
+        return ProcessedStep(
+            action="wait_for_page",
+            value="load",
+            description="Wait for page to finish loading",
+        )
+
+    def _should_add_wait_for_page(self) -> bool:
+        """Check if the last step was a navigation or nav-causing click.
+
+        Avoids duplicate wait_for_page if one was already added.
+        """
+        if not self.steps:
+            return False
+        last = self.steps[-1]
+        if last.action == "wait_for_page":
+            return False  # already waiting
+        return last.action == "navigate" or last.causes_navigation
+
     def process_event(self, event: dict) -> ProcessedStep | None:
         """Process a single raw event and return a step, or None if buffered.
 
@@ -84,6 +104,9 @@ class RecorderEventProcessor:
                 if nav_url:
                     self._last_navigate_url = self._to_relative_path(nav_url)
                 self.steps.append(click_step)
+                # Auto-insert wait_for_page after navigation-causing click
+                wait_step = self._make_wait_for_page()
+                self.steps.append(wait_step)
                 return click_step
 
         # Flush any pending click before processing a non-navigate event
@@ -112,6 +135,16 @@ class RecorderEventProcessor:
 
         if step:
             self.steps.append(step)
+            # Auto-insert wait_for_page after navigate steps
+            if step.action == "navigate":
+                wait_step = self._make_wait_for_page()
+                self.steps.append(wait_step)
+
+        # If the previous step was a navigation-causing action and the current
+        # event is not a navigate (which was already handled), insert a
+        # wait_for_page before the current step to ensure the page loaded.
+        # This covers redirect scenarios where framenavigated fires but gets
+        # filtered, yet the page still needs time to load.
 
         return flushed or step
 
@@ -133,13 +166,22 @@ class RecorderEventProcessor:
         # (relative: "/"), but both convert to "/" after _to_relative_path.
         if relative == self._last_navigate_url:
             return None
-        # Suppress navigates that follow a click within 800ms — the click
-        # already navigated (via router.push, <a> href, etc.). Without this,
-        # "Click Checkmate-qa" is followed by a redundant "Navigate to /projects/2".
-        nav_ts = event.get("timestamp", 0)
-        if self._last_click_ts and nav_ts and (nav_ts - self._last_click_ts) < 800:
+
+        # Only suppress a navigate if the immediately preceding step is a click
+        # that we already marked as causes_navigation (from the pending click
+        # merge at lines 75-87). The old 800ms blanket suppression was too
+        # aggressive — it ate legitimate navigations that happened to follow
+        # any click within 800ms.
+        if (self.steps
+            and self.steps[-1].action in ("click", "wait_for_page")
+            and any(s.causes_navigation for s in self.steps[-3:]
+                    if s.action == "click")):
             self._last_navigate_url = relative
+            # Ensure wait_for_page is present
+            if self.steps[-1].action != "wait_for_page":
+                self.steps.append(self._make_wait_for_page())
             return None
+
         self._last_navigate_url = relative
         return ProcessedStep(
             action="navigate",

@@ -39,3 +39,4 @@ coverage/
 htmlcov/
 .pytest_cache/
 CLAUDE.md
+qa_testing.db*

@@ -255,7 +255,7 @@ async def generate_metadata(project_id: int, body: GenerateMetadataRequest):
 class RefinedStep(BaseModel):
     """A single refined test step matching the builder's action vocabulary."""
     action: str = Field(description="Action: navigate, click, type, fill_form, select, hover, press_key, wait, wait_for_page, screenshot, assert_text, assert_element, assert_url, back, scroll")
-    target: Optional[str] = Field(default=None, description="Element identifier for click/type/hover/select/assert_element. MUST be preserved exactly if it is a CSS selector (starts with '[', '#', 'button[', 'input[', etc.) — these encode unique element identifiers critical for test reliability. For plain elements use readable text like 'Login button'. Must be null for navigate/fill_form/wait_for_page/screenshot/assert_text/back.")
+    target: Optional[str] = Field(default=None, description="Element identifier for click/type/hover/select/assert_element. Preserve CSS selectors and IDs exactly as recorded (e.g. '#login-form_username', '[data-testid=\"submit\"]'). Use readable text (e.g. 'Login button') only when the original target is already plain text. Must be null for navigate/fill_form/wait_for_page/screenshot/assert_text/back.")
     value: Optional[str] = Field(default=None, description="For navigate: relative URL path. For type: text. For assert_text: expected text. Must be null for click/hover.")
     description: str = Field(description="Human-readable description of this step")
 
@@ -303,9 +303,10 @@ Project URL: {base_url}
 ### Navigation & clicks
 1. Convert full URLs to relative paths (e.g. "https://example.com/about" → "/about")
 2. Add wait_for_page (value "load") after clicks that trigger page navigation
-3. Remove redundant navigate steps that follow a click on a link (the click already navigates)
-4. Keep the first navigate step (initial page load)
-5. For click targets use the button/link text (e.g. "Blog" not a CSS selector) **UNLESS the target is already a CSS selector** (starts with `[`, `#`, `button[`, `input[`, etc.). CSS selector targets must be kept EXACTLY as recorded — they encode unique element identifiers (e.g. `[data-testid="status-trigger-47"]`, `button[title="Move to folder"]`) that are critical for test reliability. Do NOT rewrite them as natural language.
+3. Remove redundant navigate steps: (a) navigates that immediately follow a click to the same page (the click already navigates), (b) navigates to intermediate redirect URLs that the user didn't intentionally visit — these appear as extra navigate steps between a user action and the final destination page
+4. Steps marked [CAUSES NAVIGATION] already handle navigation — do NOT add a separate navigate step for them
+5. Keep the first navigate step (initial page load)
+6. **Preserve CSS selector and ID-based targets exactly as recorded** (e.g. `#login-form_username`, `[data-testid="submit-btn"]`, `button.primary`). These are unique element identifiers — do NOT rewrite them as natural language. Only use readable text targets (e.g. "Login button") when the recorded target is already plain text.
 
 ### Hover steps (CRITICAL — missing hover steps cause test failures)
 6. Hover steps are emitted automatically by the recorder at click time — each `hover` step immediately before a `click` is the correct parent trigger for that click. **Always keep hover steps that precede a click; never remove them.**
@@ -317,15 +318,18 @@ Project URL: {base_url}
 10. Merge consecutive type steps on the same field into a single step
 11. For type targets use the input label or placeholder (e.g. "Email input")
 
+### Step ordering (CRITICAL)
+12. **NEVER reorder steps.** The steps are recorded in chronological order and represent the exact sequence of the user's journey. You may insert new steps (waits, assertions, screenshots) between existing steps, but the relative order of existing steps must remain unchanged.
+
 ### Quality
-12. Add assert_text or assert_element where appropriate to verify success after key interactions
-13. End with a screenshot to capture the final state
-14. Aim for the minimum number of steps that faithfully represent the user's intent"""),
+13. Add assert_text or assert_element where appropriate to verify success after key interactions
+14. End with a screenshot to capture the final state
+15. Aim for the minimum number of steps that faithfully represent the user's intent"""),
     ("human", """Here are the raw recorded steps to refine:
 
 {steps_text}
 
-Transform these into high-quality test steps.""")
+Transform these into high-quality test steps. Preserve the chronological order — do NOT move any step before or after another existing step.""")
 ])
 
 
@@ -413,6 +417,90 @@ def _scope_dropdown_assertions(steps: list[dict]) -> list[dict]:
     return result
 
 
+def _build_css_index(steps: list[RecordedStepInput]) -> dict[str, int]:
+    """Build a lookup from CSS selector target → original step index.
+
+    Used after AI refinement to restore original CSS selectors that the
+    AI may have rewritten to natural language.
+    """
+    index: dict[str, int] = {}
+    for i, step in enumerate(steps):
+        if step.target and _is_css_selector_target(step.target):
+            index[step.target] = i
+    return index
+
+
+def _restore_metadata(
+    refined_steps: list[dict],
+    original_steps: list[RecordedStepInput],
+) -> list[dict]:
+    """Restore coordinates, locators, and CSS selectors from originals.
+
+    The AI doesn't see coordinates/locators and may rewrite CSS selector
+    targets. This pass matches refined steps back to originals and restores
+    metadata that was lost during refinement.
+    """
+    # Build lookup structures from originals
+    css_index = _build_css_index(original_steps)
+
+    # Index originals by (action, target) and (action, value) for matching
+    orig_by_action_target: dict[tuple[str, str], int] = {}
+    orig_by_action_value: dict[tuple[str, str], int] = {}
+    for i, step in enumerate(original_steps):
+        if step.target:
+            key = (step.action, step.target.strip().lower())
+            if key not in orig_by_action_target:
+                orig_by_action_target[key] = i
+        if step.value:
+            key = (step.action, step.value.strip().lower())
+            if key not in orig_by_action_value:
+                orig_by_action_value[key] = i
+
+    used: set[int] = set()
+
+    for rd in refined_steps:
+        action = rd.get("action", "")
+        target = (rd.get("target") or "").strip()
+        value = (rd.get("value") or "").strip()
+
+        # Try to match back to an original step
+        match_idx: int | None = None
+
+        # 1. Exact target match (works for CSS selectors the AI kept)
+        if target:
+            key = (action, target.lower())
+            idx = orig_by_action_target.get(key)
+            if idx is not None and idx not in used:
+                match_idx = idx
+
+        # 2. Exact value match (works for navigate, type)
+        if match_idx is None and value:
+            key = (action, value.lower())
+            idx = orig_by_action_value.get(key)
+            if idx is not None and idx not in used:
+                match_idx = idx
+
+        # 3. If target is a CSS selector, always use original verbatim
+        if target and target in css_index:
+            oi = css_index[target]
+            if oi not in used:
+                match_idx = oi
+
+        if match_idx is not None:
+            used.add(match_idx)
+            orig = original_steps[match_idx]
+            # Restore coordinates and locators
+            if orig.coordinates:
+                rd["coordinates"] = orig.coordinates
+            if orig.locators:
+                rd["locators"] = orig.locators
+            # Restore CSS selector target if AI rewrote it
+            if orig.target and _is_css_selector_target(orig.target):
+                rd["target"] = orig.target
+
+    return refined_steps
+
+
 @router.post("/refine-steps")
 async def refine_steps(project_id: int, body: RefineStepsRequest):
     """Use AI to transform raw recorder steps into builder-quality steps."""
@@ -422,121 +510,49 @@ async def refine_steps(project_id: int, body: RefineStepsRequest):
             content={"detail": "No steps provided"},
         )
 
-    # ── Separate preserved steps from AI-refineable steps ───────────────────
-    # CSS-selector steps (e.g. [data-testid="x"]) are NEVER sent to the AI
-    # because the AI always rewrites them to natural language.
-    # Additionally, a click step immediately AFTER a CSS step is its paired
-    # menuitem action (e.g. CSS trigger → "Mark as Ready") and must stay
-    # in sequence with the trigger. Both are preserved verbatim.
-    #
-    # Each original step is tagged as either "preserved" or "text" (AI-refineable).
-    # After AI refinement, we rebuild the output respecting the original order.
-    preserved_indices: set[int] = set()  # indices to keep verbatim
-    text_steps: list[tuple[int, RecordedStepInput]] = []  # (orig_idx, step)
-
-    for i, step in enumerate(body.steps):
-        if step.target and _is_css_selector_target(step.target):
-            preserved_indices.add(i)
-            # Also preserve the next step if it's a click (menuitem action)
-            if i + 1 < len(body.steps) and body.steps[i + 1].action == "click":
-                preserved_indices.add(i + 1)
-        elif step.action == "scroll":
-            # Scroll steps are preserved verbatim — AI refinement rewrites
-            # target="page" to page element names like "Features".
-            preserved_indices.add(i)
-        elif step.causes_navigation:
-            # Navigation clicks (link clicks that triggered page navigation)
-            # must be preserved — AI refinement removes them thinking they're
-            # redundant, but they're essential for reaching the correct page.
-            preserved_indices.add(i)
-        elif i not in preserved_indices:
-            text_steps.append((i, step))
-    # ── End separation ─────────────────────────────────────────────────────────
-
-    # Format only the text-based steps for the LLM
+    # Format ALL steps for the LLM. CSS selector targets are preserved
+    # as-is — they are the most reliable element identifiers, especially
+    # when multiple elements share the same text (e.g. two "Next" buttons).
     steps_lines = []
-    for seq, (_, step) in enumerate(text_steps, 1):
-        parts = [f"{seq}. [{step.action}]"]
+    for i, step in enumerate(body.steps):
+        parts = [f"{i+1}. [{step.action}]"]
         if step.target:
-            parts.append(f"target=\"{step.target}\"")
+            parts.append(f'target="{step.target}"')
         if step.value:
-            parts.append(f"value=\"{step.value}\"")
+            parts.append(f'value="{step.value}"')
         if step.description:
             parts.append(f"— {step.description}")
         if step.is_credential:
             parts.append("[CREDENTIAL]")
+        if step.causes_navigation:
+            parts.append("[CAUSES NAVIGATION]")
         steps_lines.append(" ".join(parts))
 
     steps_text = "\n".join(steps_lines)
+    logger.debug(f"Refine input for project {project_id}:\n{steps_text}")
 
     try:
-        # Only call AI if there are text steps to refine
-        if text_steps:
-            model = get_llm("default")
-            structured_model = model.with_structured_output(RefinedStepsResponse)
-            chain = REFINE_PROMPT | structured_model
-            result = await chain.ainvoke({
-                "base_url": body.base_url,
-                "steps_text": steps_text,
-            })
-            refined_text_steps = list(result.steps)
-        else:
-            refined_text_steps = []
+        model = get_llm("default")
+        structured_model = model.with_structured_output(RefinedStepsResponse)
+        chain = REFINE_PROMPT | structured_model
+        result = await chain.ainvoke({
+            "base_url": body.base_url,
+            "steps_text": steps_text,
+        })
+        steps_out = [s.model_dump() for s in result.steps]
+        logger.debug(
+            f"AI returned {len(steps_out)} steps: "
+            + ", ".join(f"{s['action']}({s.get('target','')or s.get('value','')})" for s in steps_out)
+        )
 
-        # ── Merge back: interleave preserved steps with refined text steps ─────
-        # Strategy: walk through the original step indices in order.
-        # - Preserved steps are inserted verbatim at their original position.
-        # - Text steps are replaced by the next refined step from the AI.
-        # This guarantees preserved pairs (CSS trigger → menuitem) stay in order
-        # and that trigger always precedes its menuitem action.
-        total_text = len(text_steps)
-        total_refined = len(refined_text_steps)
+        # Restore coordinates, locators, and CSS selectors from originals
+        steps_out = _restore_metadata(steps_out, body.steps)
 
-        steps_out: list[dict] = []
-        refined_cursor = 0  # tracks which refined step to consume next
-
-        # Group text_steps by their original index for lookup
-        text_step_orig_indices = {orig_idx for (orig_idx, _) in text_steps}
-
-        for i in range(len(body.steps)):
-            if i in preserved_indices:
-                # Preserved step (CSS trigger or its paired menuitem)
-                steps_out.append(body.steps[i].model_dump())
-            elif i in text_step_orig_indices:
-                # This original text step maps to refined output.
-                # Consume the next refined step(s). The AI may have expanded
-                # one original step into multiple (e.g. click → click + wait),
-                # so we consume proportionally.
-                if refined_cursor < total_refined:
-                    d = refined_text_steps[refined_cursor].model_dump()
-                    # Restore coordinates and locators from this original step
-                    orig_step = body.steps[i]
-                    if orig_step.coordinates:
-                        d["coordinates"] = orig_step.coordinates
-                    if orig_step.locators:
-                        d["locators"] = orig_step.locators
-                    steps_out.append(d)
-                    refined_cursor += 1
-
-        # Append any remaining refined steps the AI added beyond the original count
-        # (e.g. wait_for_page, assertions, screenshot)
-        while refined_cursor < total_refined:
-            steps_out.append(refined_text_steps[refined_cursor].model_dump())
-            refined_cursor += 1
-        # ── End merge ──────────────────────────────────────────────────────────
-
-        # ── Scope dropdown assertions ───────────────────────────────────────────
-        # Pattern: CSS trigger click → (no page nav) → menuitem click → assert_text
-        # Problem: AI-generated assert_text checks the whole page body, so it finds
-        # filter chips and other elements that share the text (always passes — false +).
-        # Fix: replace with assert_element using `CSS_SEL:has-text("value")` which
-        # narrows the assertion to the specific trigger element whose state changed.
+        # Scope dropdown assertions
         steps_out = _scope_dropdown_assertions(steps_out)
-        # ── End assertion scoping ───────────────────────────────────────────────
 
         logger.info(
             f"Refined {len(body.steps)} raw steps → {len(steps_out)} quality steps "
-            f"({len(preserved_indices)} steps kept verbatim) "
             f"for project {project_id}"
         )
         return {"steps": steps_out}
