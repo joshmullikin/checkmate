@@ -256,7 +256,7 @@ class RefinedStep(BaseModel):
     """A single refined test step matching the builder's action vocabulary."""
     action: str = Field(description="Action: navigate, click, type, fill_form, select, hover, press_key, wait, wait_for_page, screenshot, assert_text, assert_element, assert_url, back, scroll")
     target: Optional[str] = Field(default=None, description="Element identifier for click/type/hover/select/assert_element. Preserve CSS selectors and IDs exactly as recorded (e.g. '#login-form_username', '[data-testid=\"submit\"]'). Use readable text (e.g. 'Login button') only when the original target is already plain text. Must be null for navigate/fill_form/wait_for_page/screenshot/assert_text/back.")
-    value: Optional[str] = Field(default=None, description="For navigate: relative URL path. For type: text. For assert_text: expected text. Must be null for click/hover.")
+    value: Optional[str] = Field(default=None, description="For navigate: REQUIRED, the relative URL path (e.g. '/login', '/dashboard'). For type: text to type. For assert_text: expected text. For wait_for_page: REQUIRED, one of 'load', 'domcontentloaded', or 'networkidle'. For press_key: key name. For assert_url: regex pattern. Must be null for click/hover.")
     description: str = Field(description="Human-readable description of this step")
 
 
@@ -276,21 +276,58 @@ REFINE_PROMPT = ChatPromptTemplate.from_messages([
 Project URL: {base_url}
 
 ## Available Actions (mapped to Playwright)
-- navigate: Go to URL (target = null, value = relative URL path like "/login")
-- click: Click element (target = readable element description like "Login button", value = null)
-- type: Type into field (target = field description like "Email input", value = text to type)
+- navigate: Go to URL (target = null, value = relative URL path)
+- click: Click element (target = readable element description, value = null)
+- type: Type into field (target = field description, value = text to type)
 - fill_form: Fill multiple fields at once (target = null, value = JSON object)
 - select: Select dropdown option (target = dropdown description, value = option text)
-- hover: Hover over a nav menu item to reveal its submenu (target = element description, value = null). Always add a hover step BEFORE clicking items inside hover-triggered dropdowns.
-- press_key: Press key (target = null, value = key name like "Enter")
+- hover: Hover over element (target = element description, value = null). Always add a hover step BEFORE clicking items inside hover-triggered dropdowns.
+- press_key: Press key (target = null, value = key name)
 - wait: Wait for element/text (target = text/element to wait for)
-- wait_for_page: Wait for page load (target = null, value = "load")
+- wait_for_page: Wait for page load (target = null, value = load state)
 - screenshot: Capture screenshot (target = null, value = null)
 - assert_text: Verify text visible (target = null, value = expected text)
 - assert_element: Verify element exists (target = element description, value = null)
-- assert_url: Verify URL matches pattern (target = null, value = regex like ".*dashboard.*")
+- assert_url: Verify URL matches pattern (target = null, value = regex pattern)
 - back: Navigate back (target = null, value = null)
 - scroll: Scroll page (target = null or element, value = direction)
+
+## CRITICAL: Action-specific target/value format rules
+
+**navigate** - Go to URL path (target MUST be null, value = URL path):
+  CORRECT: {"action": "navigate", "target": null, "value": "/login", "description": "Go to login page"}
+  CORRECT: {"action": "navigate", "target": null, "value": "/", "description": "Go to home page"}
+  WRONG: {"action": "navigate", "target": "/login", "value": null}
+  WRONG: {"action": "navigate", "target": null, "value": null}
+
+**wait_for_page** - Wait for page load event (target MUST be null, value = load state):
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "load", "description": "Wait for page to load"}
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "networkidle", "description": "Wait for network idle"}
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "domcontentloaded", "description": "Wait for DOM"}
+  WRONG: {"action": "wait_for_page", "target": "load", "value": null}
+  WRONG: {"action": "wait_for_page", "target": null, "value": null}
+  Valid values: "load", "networkidle", "domcontentloaded"
+
+**click** - Click element (target = exact visible text or CSS selector, value MUST be null):
+  CORRECT: {"action": "click", "target": "Login", "value": null, "description": "Click Login button"}
+  WRONG: {"action": "click", "target": null, "value": "Login"}
+
+**type** - Type into field (target = field label/selector, value = text to type):
+  CORRECT: {"action": "type", "target": "Email", "value": "test@example.com", "description": "Enter email"}
+
+**press_key** - Press keyboard key (target MUST be null, value = key name):
+  CORRECT: {"action": "press_key", "target": null, "value": "Enter", "description": "Press Enter"}
+  WRONG: {"action": "press_key", "target": "Enter", "value": null}
+
+**assert_url** - Verify URL matches pattern (target MUST be null, value = regex):
+  CORRECT: {"action": "assert_url", "target": null, "value": ".*dashboard.*", "description": "Verify on dashboard"}
+  WRONG: {"action": "assert_url", "target": "dashboard", "value": null}
+
+**screenshot** - Take screenshot (target MUST be null):
+  CORRECT: {"action": "screenshot", "target": null, "value": null, "description": "Take screenshot"}
+
+**back** - Navigate back (target MUST be null, value MUST be null):
+  CORRECT: {"action": "back", "target": null, "value": null, "description": "Go back"}
 
 ## Refinement Rules
 
@@ -306,6 +343,11 @@ Project URL: {base_url}
 3. Remove redundant navigate steps: (a) navigates that immediately follow a click to the same page (the click already navigates), (b) navigates to intermediate redirect URLs that the user didn't intentionally visit — these appear as extra navigate steps between a user action and the final destination page
 4. Steps marked [CAUSES NAVIGATION] already handle navigation — do NOT add a separate navigate step for them
 5. Keep the first navigate step (initial page load)
+
+### Page load after redirects (CRITICAL)
+- Login flows, OAuth callbacks, and similar flows involve server-side redirects (302/307) that are invisible in the recorded steps. The redirect navigate events are filtered out, but the page still needs to load before the user can interact.
+- **If a click (e.g. "Login", "Submit", "Sign In") is followed by interactions on a clearly different page (e.g. typing into fields that weren't on the previous page, clicking elements that belong to a new page) with NO wait_for_page between them, insert a wait_for_page (value "load") after the click.**
+- Only add ONE wait_for_page per redirect chain — do not add multiple consecutive wait_for_page steps.
 6. **Preserve CSS selector and ID-based targets exactly as recorded** (e.g. `#login-form_username`, `[data-testid="submit-btn"]`, `button.primary`). These are unique element identifiers — do NOT rewrite them as natural language. Only use readable text targets (e.g. "Login button") when the recorded target is already plain text.
 
 ### Hover steps (CRITICAL — missing hover steps cause test failures)
@@ -499,6 +541,7 @@ def _restore_metadata(
                 rd["target"] = orig.target
 
     return refined_steps
+
 
 
 @router.post("/refine-steps")
