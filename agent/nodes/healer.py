@@ -55,24 +55,62 @@ the test pass.
 Each step has four fields:
   action      – one of: navigate, click, type, fill_form, select, hover,
                 press_key, wait, wait_for_page, screenshot, assert_text,
-                assert_element, assert_url, back, evaluate, upload, drag
+                assert_element, assert_url, back, evaluate, upload, drag, scroll
   target      – plain visible text of the element (preferred), or a CSS/role
                 selector. ALWAYS prefer the plain visible text the user sees
                 (e.g. "Blog", "Sign In", "Contact Us") over CSS selectors.
   value       – typed text, assertion expected value, wait duration (ms), etc.
   description – human-readable summary
 
+## CRITICAL: Action-specific target/value format rules
+
+**navigate** - Go to URL path (target MUST be null, value = URL path):
+  CORRECT: {"action": "navigate", "target": null, "value": "/login", "description": "Go to login page"}
+  WRONG: {"action": "navigate", "target": "/login", "value": null}
+  WRONG: {"action": "navigate", "target": "https://example.com", "value": "/login"}
+
+**wait_for_page** - Wait for page load event (target MUST be null, value = load state):
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "load", "description": "Wait for page to load"}
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "networkidle", "description": "Wait for network idle"}
+  CORRECT: {"action": "wait_for_page", "target": null, "value": "domcontentloaded", "description": "Wait for DOM"}
+  WRONG: {"action": "wait_for_page", "target": "load", "value": null}
+  Valid values: "load", "networkidle", "domcontentloaded"
+
+**assert_url** - Verify URL matches pattern (target MUST be null, value = regex):
+  CORRECT: {"action": "assert_url", "target": null, "value": ".*dashboard.*", "description": "Verify on dashboard"}
+  WRONG: {"action": "assert_url", "target": "dashboard", "value": null}
+
+**click** - Click element (target = exact visible text, value MUST be null):
+  CORRECT: {"action": "click", "target": "Login", "value": null, "description": "Click Login button"}
+  WRONG: {"action": "click", "target": null, "value": "Login"}
+
+**type** - Type into field (target = field label, value = text to type):
+  CORRECT: {"action": "type", "target": "Email", "value": "test@example.com", "description": "Enter email"}
+
+**press_key** - Press keyboard key (target MUST be null, value = key name):
+  CORRECT: {"action": "press_key", "target": null, "value": "Enter", "description": "Press Enter"}
+  WRONG: {"action": "press_key", "target": "Enter", "value": null}
+
+**screenshot** - Take screenshot (target MUST be null, value = optional filename):
+  CORRECT: {"action": "screenshot", "target": null, "value": null, "description": "Take screenshot"}
+  CORRECT: {"action": "screenshot", "target": null, "value": "error.png", "description": "Capture error"}
+
+**back** - Navigate back (target MUST be null, value MUST be null):
+  CORRECT: {"action": "back", "target": null, "value": null, "description": "Go back"}
+
 ## Rules
 1. Return ALL steps (not just the changed ones). Preserve unchanged steps verbatim.
 2. For every step you change, set change_reason to a short explanation.
-3. **Most important rule for "Element not found" errors**: the target name in
+3. **CRITICAL**: When fixing steps, you MUST follow the exact target/value format rules above.
+   Do NOT put URLs in target, do NOT put load states in target, do NOT swap target/value.
+4. **Most important rule for "Element not found" errors**: the target name in
    the step is stale or misspelled. Look at the list of ACTUAL PAGE ELEMENTS
    provided (if available) and find the closest match by meaning or text
    similarity. For example: "Block button" → "Blog", "Signin" → "Sign In".
    Use the exact visible text from the page elements list as the new target.
-4. Use the screenshot to understand what the page looks like at failure.
-5. Do NOT fix a working selector to a CSS selector — keep targets as plain text.
-6. Set confidence between 0.0 and 1.0 reflecting certainty about the fix.
+5. Use the screenshot to understand what the page looks like at failure.
+6. Do NOT fix a working selector to a CSS selector — keep targets as plain text.
+7. Set confidence between 0.0 and 1.0 reflecting certainty about the fix.
    If actual page elements are provided and you found a close match, confidence
    should be ≥ 0.85.
 """
