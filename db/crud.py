@@ -57,6 +57,12 @@ def get_project(session: Session, project_id: int) -> Optional[Project]:
     return session.get(Project, project_id)
 
 
+def get_project_by_name(session: Session, name: str) -> Optional[Project]:
+    """Find a project by exact name."""
+    statement = select(Project).where(Project.name == name)
+    return session.exec(statement).first()
+
+
 def get_projects(session: Session, skip: int = 0, limit: int = 100) -> List[Project]:
     """Get all projects with pagination."""
     statement = select(Project).offset(skip).limit(limit)
@@ -636,6 +642,15 @@ def get_fixtures_by_ids(session: Session, fixture_ids: List[int]) -> List[Fixtur
         return []
     statement = select(Fixture).where(Fixture.id.in_(fixture_ids))
     return session.exec(statement).all()
+
+
+def get_fixture_by_name_and_project(session: Session, project_id: int, name: str) -> Optional[Fixture]:
+    """Find a fixture by name within a project."""
+    statement = select(Fixture).where(
+        Fixture.project_id == project_id,
+        Fixture.name == name,
+    )
+    return session.exec(statement).first()
 
 
 def update_fixture(session: Session, fixture_id: int, data: FixtureUpdate) -> Optional[Fixture]:

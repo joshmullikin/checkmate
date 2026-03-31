@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from core.config import INTELLIGENT_RETRY_ENABLED, MULTIPLE_ENVIRONMENTS
+from core.config import INTELLIGENT_RETRY_ENABLED, MULTIPLE_ENVIRONMENTS, CHECKMATE_REMOTES
 
 router = APIRouter(tags=["config"])
 
@@ -12,6 +12,7 @@ class FeaturesResponse(BaseModel):
     """Response for features endpoint."""
     intelligent_retry: bool
     multiple_environments: bool
+    remotes_configured: bool
 
 
 @router.get("/features", response_model=FeaturesResponse)
@@ -24,4 +25,5 @@ def get_features():
     return FeaturesResponse(
         intelligent_retry=INTELLIGENT_RETRY_ENABLED,
         multiple_environments=MULTIPLE_ENVIRONMENTS,
+        remotes_configured=len(CHECKMATE_REMOTES) > 0,
     )
