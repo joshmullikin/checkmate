@@ -39,7 +39,7 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Export production requirements
-        run: uv export --frozen --no-dev --format requirements-txt -o requirements-ci.txt
+        run: uv export --frozen --no-dev --format requirements-txt --no-hashes --no-emit-project -o requirements-ci.txt
 
       - name: Audit Python dependencies (high+)
         run: uvx pip-audit -r requirements-ci.txt
