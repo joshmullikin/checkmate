@@ -21,7 +21,6 @@ COPY api ./api
 COPY core ./core
 COPY db ./db
 COPY scheduler ./scheduler
-COPY utils ./utils
 RUN uv sync --frozen --no-dev
 
 
