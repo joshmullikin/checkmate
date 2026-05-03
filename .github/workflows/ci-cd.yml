@@ -134,6 +134,65 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
 
+  docker_smoke:
+    name: Docker Smoke Test
+    runs-on: ubuntu-latest
+    needs:
+      - security
+      - test
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.chainguard
+          load: true
+          push: false
+          tags: local/checkmate-smoke:${{ github.sha }}
+
+      - name: Run container and wait for Docker health
+        shell: bash
+        run: |
+          docker run -d --name checkmate-smoke local/checkmate-smoke:${{ github.sha }}
+          for i in {1..60}; do
+            container_status="$(docker inspect --format='{{.State.Status}}' checkmate-smoke 2>/dev/null || echo missing)"
+            health_status="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' checkmate-smoke 2>/dev/null || echo missing)"
+            if [ "$container_status" != "running" ]; then
+              echo "Smoke test failed: container status is '$container_status'"
+              docker inspect --format='{{json .State}}' checkmate-smoke || true
+              docker logs checkmate-smoke || true
+              exit 1
+            fi
+            if [ "$health_status" = "healthy" ]; then
+              echo "Smoke test passed"
+              exit 0
+            fi
+            if [ "$health_status" = "unhealthy" ]; then
+              echo "Smoke test failed: health status is '$health_status'"
+              docker inspect --format='{{json .State.Health}}' checkmate-smoke || true
+              docker logs checkmate-smoke || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Smoke test failed: container did not become healthy"
+          docker ps -a --filter name=checkmate-smoke
+          docker inspect --format='{{json .State.Health}}' checkmate-smoke || true
+          docker logs checkmate-smoke
+          exit 1
+
+      - name: Cleanup smoke test container
+        if: always()
+        shell: bash
+        run: docker rm -f checkmate-smoke || true
+
   publish:
     name: Publish Docker Image
     runs-on: ubuntu-latest
@@ -141,6 +200,7 @@ jobs:
       - security
       - test
       - docker_security
+      - docker_smoke
     if: github.event_name == 'push'
     permissions:
       contents: read
