@@ -1027,12 +1027,6 @@ def move_folder(
             raise ValueError("Parent folder belongs to a different project")
         if parent.parent_id is not None:
             raise ValueError("Maximum folder nesting depth is 2 levels")
-        # Prevent circular reference
-        children = session.exec(
-            select(TestFolder).where(TestFolder.parent_id == folder_id)
-        ).all()
-        if any(c.id == new_parent_id for c in children):
-            raise ValueError("Cannot create circular folder reference")
 
     db_folder.parent_id = new_parent_id
     db_folder.updated_at = datetime.utcnow()

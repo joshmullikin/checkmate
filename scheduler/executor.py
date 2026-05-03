@@ -14,6 +14,7 @@ from db.models import RunStatus, RunTrigger, ScheduledRunCreate, TestRunCreate
 from db import crud
 from agent.executor_client import PlaywrightExecutorClient
 from agent.utils.resolver import resolve_references, mask_passwords_in_steps
+from agent.nodes.failure_classifier import classify_failure
 from scheduler.service import get_timezone
 
 logger = get_logger(__name__)
@@ -252,15 +253,16 @@ async def execute_scheduled_run(schedule_id: int, skip_claim: bool = False):
                     if retry_mode == "intelligent" and last_failure_info:
                         # Use LLM classifier for intelligent retry
                         try:
-                            from agent.nodes.classifier import classify_failure
                             classification = await classify_failure(
                                 action=last_failure_info.get("action", ""),
                                 target=None,
                                 value=None,
                                 error_message=last_failure_info.get("error", ""),
                             )
-                            should_retry = classification.get("retryable", True)
-                            retry_reason = classification.get("reason", "")
+                            if hasattr(classification, "model_dump"):
+                                classification = classification.model_dump()
+                            should_retry = classification.get("retryable", classification.get("is_retryable", True))
+                            retry_reason = classification.get("reason", classification.get("reasoning", ""))
                             logger.info(f"Intelligent retry classification: retryable={should_retry}, reason={retry_reason}")
 
                             if should_retry:
@@ -357,11 +359,10 @@ async def send_scheduled_run_notifications(session, scheduled_run_id: int):
     sent_ids, errors = await send_notifications(scheduled_run, schedule, channels_to_notify)
 
     # Update scheduled run with notification results
-    update_data = {}
-    if sent_ids:
-        update_data["notifications_sent"] = json.dumps(sent_ids)
-    if errors:
-        update_data["notification_errors"] = json.dumps(errors)
+    update_data = {
+        "notifications_sent": json.dumps(sent_ids),
+        "notification_errors": json.dumps(errors),
+    }
 
-    if update_data:
+    if sent_ids or errors:
         crud.update_scheduled_run(session, scheduled_run_id, update_data)

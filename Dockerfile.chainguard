@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.7
+
+FROM cgr.dev/chainguard/python:latest-dev AS builder
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+# Install build tooling in the builder only.
+RUN pip install --no-cache-dir --upgrade pip uv
+
+# Install third-party dependencies first for better layer caching.
+COPY pyproject.toml uv.lock* README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Copy application source and install project package.
+COPY agent ./agent
+COPY api ./api
+COPY core ./core
+COPY db ./db
+COPY scheduler ./scheduler
+COPY utils ./utils
+RUN uv sync --frozen --no-dev
+
+
+FROM cgr.dev/chainguard/python:latest
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/app/.venv/bin:$PATH
+
+COPY --from=builder /app /app
+
+EXPOSE 8000
+
+USER nonroot
+
+CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

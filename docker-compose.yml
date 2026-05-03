@@ -17,7 +17,9 @@ services:
 
   # FastAPI + LangGraph backend
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.chainguard
     ports:
       - "8000:8000"
     environment:

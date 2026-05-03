@@ -827,3 +827,10 @@ class EnvironmentUpdate(SQLModel):
     base_url: Optional[str] = None
     variables: Optional[dict] = None
     is_default: Optional[bool] = None
+
+
+for _name, _obj in list(globals().items()):
+    if _name.startswith("Test") and isinstance(_obj, type):
+        _obj.__test__ = False
+
+del _name, _obj

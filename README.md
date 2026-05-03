@@ -49,6 +49,22 @@ npm run dev
 
 Open http://localhost:3000 in your browser.
 
+## Container Images
+
+Default Docker image (Chainguard):
+
+```bash
+docker build -f Dockerfile.chainguard -t checkmate:latest .
+docker run --rm -p 8000:8000 --env-file .env checkmate:latest
+```
+
+Legacy Debian slim image:
+
+```bash
+docker build -f Dockerfile -t checkmate:debian .
+docker run --rm -p 8000:8000 --env-file .env checkmate:debian
+```
+
 ## Architecture
 
 ```

@@ -170,6 +170,9 @@ class TestRunWithSteps(BaseModel):
     retry_reason: Optional[str] = None
 
 
+TestRunWithSteps.__test__ = False
+
+
 @router.get("/{test_case_id}/runs", response_model=List[TestRunWithSteps])
 def get_test_case_runs(
     test_case_id: int,
@@ -708,6 +711,7 @@ async def run_test_case_stream(
     test_case_id: int,
     browser: Optional[str] = None,
     viewport: Optional[dict] = None,
+    retry: Optional[RetryConfig] = None,
     retry_config: Optional[RetryConfig] = None,
     environment_id: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
@@ -719,8 +723,12 @@ async def run_test_case_stream(
         test_case_id: ID of test case to run
         browser: Optional browser ID (e.g., "chrome", "chromium-headless")
         viewport: Optional viewport size {"width": int, "height": int}
+        retry: Legacy retry configuration alias
         retry_config: Optional retry configuration
     """
+    if retry_config is None:
+        retry_config = retry
+
     max_retries = retry_config.max_retries if retry_config else 0
     retry_mode = retry_config.retry_mode if retry_config else "simple"
 
