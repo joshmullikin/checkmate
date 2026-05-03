@@ -1,0 +1,48 @@
+name: Scheduled Security Bot
+
+on:
+  schedule:
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  osv-security:
+    name: OSV + pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Export production requirements
+        run: uv export --frozen --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements-ci.txt
+
+      - name: Audit Python dependencies (high+)
+        run: uvx pip-audit -r requirements-ci.txt
+
+      - name: Run OSV scanner (SARIF)
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            ghcr.io/google/osv-scanner:v2.3.5 \
+            scan --lockfile=uv.lock --format sarif --output osv-results.sarif
+
+      - name: Upload OSV SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
