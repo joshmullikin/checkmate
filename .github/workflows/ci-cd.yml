@@ -53,7 +53,7 @@ jobs:
             scan --lockfile=uv.lock
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -128,7 +128,7 @@ jobs:
           tags: local/checkmate:${{ github.sha }}
 
       - name: Trivy image scan (blocking)
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: local/checkmate:${{ github.sha }}
           severity: HIGH,CRITICAL
